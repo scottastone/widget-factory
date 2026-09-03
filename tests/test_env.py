@@ -93,3 +93,46 @@ def test_random_policy_only_picks_legal_actions():
         world.step(action)
         if world.credits < 0:
             break
+
+
+def test_dashboard_renders_every_panel():
+    from io import StringIO
+
+    from rich.console import Console
+
+    from rl_world.ui import Dashboard, summary
+
+    env = FactoryEnv(Config(max_ticks=50), seed=0)
+    env.reset(0)
+    dashboard = Dashboard(env, "test")
+    for action in (Action.BUILD_MINE_A, Action.BUILD_MINE_A, Action.BUILD_GENERATOR):
+        *_, info = env.step(action)
+        dashboard.record(action, info)
+
+    console = Console(file=StringIO(), width=100, height=24)
+    console.print(dashboard.layout())
+    console.print(dashboard.static())
+    console.print(summary(env, 12.5, bankrupt=False))
+    output = console.file.getvalue()
+
+    for expected in ("plant", "stock", "seams", "decisions", "build_mine_a x2", "credits"):
+        assert expected in output
+
+
+def test_dashboard_survives_a_wiped_out_factory():
+    from io import StringIO
+
+    from rich.console import Console
+
+    from rl_world.ui import Dashboard
+
+    env = FactoryEnv(Config(max_ticks=50), seed=0)
+    env.reset(0)
+    env.world.machines.clear()
+    for deposit in env.world.deposits:
+        deposit.remaining = 0.0
+    env.step(Action.NOOP)
+
+    console = Console(file=StringIO(), width=100, height=24)
+    console.print(Dashboard(env, "test").layout())
+    assert "exhausted" in console.file.getvalue()

@@ -5,17 +5,34 @@ smelt them into components A and B, and assemble `2A + 1B` into widgets you sell
 moving market — while power shortages, wear, deposit depletion and disasters try to
 bankrupt you.
 
-No GUI. It is a library with a terminal driver.
+It is a library with a live terminal dashboard, no GUI.
 
 ## Install & run
 
 ```bash
 uv sync
-uv run rl-world heuristic --seed 1        # scripted baseline
+uv run rl-world heuristic --seed 1        # scripted baseline, live view
 uv run rl-world random --seed 1           # random baseline (dies in ~30 ticks)
 uv run rl-world play                      # drive it yourself
 uv run pytest
 ```
+
+The `random` and `heuristic` runs open a Rich dashboard that updates in place —
+plant condition, stockpiles, remaining seams, a power-load gauge, and a scrolling log of
+the agent's decisions with disasters called out in red. Repeated actions fold into one
+`x N` line.
+
+| Flag | |
+| --- | --- |
+| `--delay 0.05` | seconds per tick in the live view; `0` runs flat out |
+| `--ticks 500` | episode length |
+| `--seed N` | reproducible run |
+| `--reward profit\|widgets` | what `step` returns as reward |
+| `--plain` | line-by-line text instead of the live view (also used automatically when stdout is not a terminal) |
+| `--render-every 50` | dashboard cadence for `--plain`; `0` prints only disasters |
+
+`play` prints the same panels and prompts for an action number each tick, listing only
+the legal ones.
 
 ## Agent API
 
