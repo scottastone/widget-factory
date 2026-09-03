@@ -42,7 +42,7 @@ class FactoryEnv:
 
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict]:
         self.world.reset(seed)
-        return self._observe(), self._info()
+        return self.observation(), self._info()
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
         world = self.world
@@ -59,11 +59,12 @@ class FactoryEnv:
             reward -= self.cfg.bankruptcy_penalty
         truncated = world.tick >= self.cfg.max_ticks
 
-        return self._observe(), float(reward), terminated, truncated, self._info()
+        return self.observation(), float(reward), terminated, truncated, self._info()
 
     # ---------------------------------------------------------------- views
 
-    def _observe(self) -> np.ndarray:
+    def observation(self) -> np.ndarray:
+        """The agent-visible state vector; slots are named by OBSERVATION_LABELS."""
         world = self.world
         report = world.report
         values = [world.credits / 1000.0]

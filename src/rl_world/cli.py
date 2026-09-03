@@ -6,6 +6,7 @@ import time
 import numpy as np
 from rich.console import Console
 from rich.live import Live
+from rich.table import Table
 
 from .agents import heuristic_policy, random_policy
 from .config import Config
@@ -23,7 +24,7 @@ def _run_live(env: FactoryEnv, policy, seed: int | None, mode: str, delay: float
 
     with Live(dashboard.layout(), console=console, refresh_per_second=30) as live:
         while True:
-            action = policy(env.world)
+            action = policy(env)
             _, reward, terminated, truncated, info = env.step(action)
             total += reward
             dashboard.record(action, info)
@@ -41,7 +42,7 @@ def _run_plain(env: FactoryEnv, policy, seed: int | None, render_every: int) -> 
     env.reset(seed)
     total = 0.0
     while True:
-        action = policy(env.world)
+        action = policy(env)
         _, reward, terminated, truncated, info = env.step(action)
         total += reward
         if render_every and env.world.tick % render_every == 0:
@@ -89,10 +90,56 @@ def _play(env: FactoryEnv, seed: int | None) -> None:
             return
 
 
+def _warn_on_horizon_mismatch(console: Console, policy, config: Config) -> None:
+    """The observation includes tick/max_ticks, so a shorter run is off-distribution."""
+    trained = policy.trained_on.get("max_ticks")
+    if trained and trained != config.max_ticks:
+        console.print(
+            f"[yellow]warning:[/] policy trained with --ticks {trained}, running "
+            f"{config.max_ticks}; it reads the clock, so expect odd behaviour"
+        )
+
+
+def _evaluate(args, config: Config) -> None:
+    """Score the trained policy against both scripted baselines on identical seeds."""
+    from .train import TrainedPolicy, evaluate
+
+    console = Console()
+    rng = np.random.default_rng(args.seed)
+    contenders = {
+        "random": lambda e: random_policy(e.world, rng),
+        "heuristic": lambda e: heuristic_policy(e.world),
+    }
+    try:
+        policy = TrainedPolicy(args.model, device=args.device or "cpu")
+        _warn_on_horizon_mismatch(console, policy, config)
+        contenders["ppo"] = policy
+    except FileNotFoundError:
+        console.print(f"[yellow]no model at {args.model}; run 'rl-world train' first[/]")
+
+    table = Table(title=f"{args.episodes} episodes x {config.max_ticks} ticks")
+    table.add_column("policy")
+    for column in ("return", "widgets", "credits", "ticks", "bankrupt"):
+        table.add_column(column, justify="right")
+    for name, policy in contenders.items():
+        scores = evaluate(policy, args.episodes, config)
+        table.add_row(
+            name,
+            f"{scores['return']:,.0f}",
+            f"{scores['widgets']:,.0f}",
+            f"{scores['credits']:,.0f}",
+            f"{scores['ticks']:,.0f}",
+            f"{scores['bankrupt']:.0%}",
+        )
+    console.print(table)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="A toy resource economy for RL agents.")
     parser.add_argument(
-        "mode", choices=("play", "random", "heuristic"), help="who drives the factory"
+        "mode",
+        choices=("play", "random", "heuristic", "agent", "train", "eval"),
+        help="who drives the factory ('train' fits a policy, 'eval' scores them all)",
     )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--ticks", type=int, default=500)
@@ -106,17 +153,54 @@ def main() -> None:
     parser.add_argument(
         "--render-every", type=int, default=50, help="tick cadence for --plain"
     )
+    parser.add_argument("--model", default="models/ppo_factory", help="saved policy")
+    parser.add_argument("--timesteps", type=int, default=3_000_000)
+    parser.add_argument("--n-envs", type=int, default=32)
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="torch device; defaults to cuda for train and cpu for inference, where "
+        "single-observation forward passes are latency-bound (measured faster on cpu)",
+    )
+    parser.add_argument("--episodes", type=int, default=20)
     args = parser.parse_args()
 
-    env = FactoryEnv(Config(max_ticks=args.ticks, reward_mode=args.reward), args.seed)
+    config = Config(max_ticks=args.ticks, reward_mode=args.reward)
+
+    if args.mode == "train":
+        from .train import train
+
+        path = train(
+            timesteps=args.timesteps,
+            n_envs=args.n_envs,
+            device=args.device or "cuda",
+            out=args.model,
+            seed=args.seed,
+            config=config,
+        )
+        Console().print(f"[green]saved[/] {path}")
+        return
+
+    if args.mode == "eval":
+        _evaluate(args, config)
+        return
+
+    env = FactoryEnv(config, args.seed)
     if args.mode == "play":
         _play(env, args.seed)
         return
 
     rng = np.random.default_rng(args.seed)
-    policy = (
-        heuristic_policy if args.mode == "heuristic" else lambda w: random_policy(w, rng)
-    )
+    if args.mode == "agent":
+        from .train import TrainedPolicy
+
+        policy = TrainedPolicy(args.model, device=args.device or "cpu")
+        _warn_on_horizon_mismatch(Console(), policy, config)
+    elif args.mode == "heuristic":
+        policy = lambda e: heuristic_policy(e.world)  # noqa: E731
+    else:
+        policy = lambda e: random_policy(e.world, rng)  # noqa: E731
+
     if args.plain or not Console().is_terminal:
         _run_plain(env, policy, args.seed, args.render_every)
     else:

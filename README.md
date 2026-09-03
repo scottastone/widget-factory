@@ -98,8 +98,56 @@ debugging.
 | 13–14 | `prospect_a`, `prospect_b` |
 | 15–19 | `sell_` ore_a, ore_b, comp_a, comp_b, widgets (sells the whole stockpile) |
 
-## Baselines
+## Training an agent
 
-Over 500 ticks, seeds 0–7: the random policy goes bankrupt within ~40 ticks every time;
-the heuristic in [agents.py](src/rl_world/agents.py) returns roughly 15k–24k credits and
-builds ~1,900 widgets, but still dies to an early disaster run on some seeds.
+```bash
+uv run rl-world train --timesteps 3000000     # ~7 min on an RTX 5080
+uv run rl-world eval  --episodes 20           # score it against both baselines
+uv run rl-world agent                         # watch it play in the live dashboard
+```
+
+[train.py](src/rl_world/train.py) fits **MaskablePPO** (sb3-contrib) rather than plain
+PPO: the world already publishes `legal_actions()`, and feeding that mask to the policy
+stops it wasting rollouts proposing builds it cannot afford.
+[gym_env.py](src/rl_world/gym_env.py) is the Gymnasium adapter — it exposes
+`action_masks()`, which is the hook MaskablePPO looks for. Observations and rewards run
+through `VecNormalize`, whose statistics are saved next to the model and reloaded for
+inference.
+
+## Results
+
+20 episodes x 500 ticks, identical seeds for every policy:
+
+| policy | return | widgets | bankrupt |
+| --- | ---: | ---: | ---: |
+| random | -502 | 0 | 100% |
+| heuristic ([agents.py](src/rl_world/agents.py)) | 21,138 | 1,916 | 0% |
+| MaskablePPO, 3M steps | **47,710** | **3,300** | 0% |
+
+Random dies within ~30 ticks every time. The heuristic survives most seeds but still
+loses some to an early disaster run. PPO roughly doubles it, and stopped going bankrupt
+altogether.
+
+**The policy reads the clock.** `progress = tick/max_ticks` is in the observation, so a
+policy is tied to the horizon it trained on — run the 500-tick model with `--ticks 200`
+and it goes bankrupt 67% of the time. The trained horizon is saved beside the model and
+`agent`/`eval` warn when it disagrees with `--ticks`.
+
+## Notes on the hardware
+
+Trained on an RTX 5080 (`sm_120`); `torch==2.14.0+cu130` from PyPI supports it directly,
+no special index needed. Measured throughput on that machine:
+
+| config | fps |
+| --- | ---: |
+| `DummyVecEnv`, 32 envs, cuda | 12,560 |
+| `DummyVecEnv`, 32 envs, cpu | 10,199 |
+| `SubprocVecEnv`, 32 envs, cuda | 7,459 |
+
+Two things worth knowing. `SubprocVecEnv` is *slower* — the simulator is microseconds per
+step, so IPC costs more than the parallelism buys, which is why `make_vec_env` doesn't
+offer it. And the GPU is worth only ~20% here: `nvidia-smi` reads ~12% utilization
+mid-run, because the bottleneck is Python stepping 32 environments, not the 256x256 MLP.
+It would matter with a much wider network or a batched, vectorized world. Inference is
+CPU by default — single-observation forward passes are latency-bound and measured faster
+there — while `train` defaults to cuda; `--device` overrides both.
